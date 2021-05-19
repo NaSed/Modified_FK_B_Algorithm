@@ -1,0 +1,553 @@
+% The below code has been written based on the FK-B algorithm presented in "how to apply sat-solving for the equivalence test of mootone normal forms", page 5
+% This function is combination of FK_MH and FK_MR
+%This script uses hash table to memorize cnf and dnf and their conflict assignment
+% In this version, I use cell arrays as hash table
+% I use the original version of CNF as key, and do not obtain canonical
+% form of CNF
+% We use hash when the number of clauses/monomials are more than threshold
+% This version chooses the splitting variable based on weights assigned to
+% variables.
+%MRWH
+function CA = FK_All(cnf, dnf, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist)
+
+global call_counter splitting depth var_depth
+global cellHash cellSize Hash_thresh canonical CA_tab
+
+CA = [];
+thresh = Hash_thresh;
+call_counter = call_counter +1;
+
+key1 = []; key2 = []; key3 = []; key4 = []; key5 = []; key6 = [];
+
+if (Shrinkage)
+    if size(cnf,1) > 2 && size(dnf,1) > 2
+        [cnf, dnf] = Shrinking(cnf, dnf);
+        if (isempty(cnf) && isempty(dnf))
+            CA = [];
+            depth = depth - 1;
+            return
+        end
+    end
+end
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                                                         %
+%                     Checking redundancy                 %
+%                                                         %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+nC = size(cnf,1); % Number of clauses in CNF
+nD = size(dnf,1); % Number of monomials in DNF
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                                                         %
+%                     Checking conditions                 %
+%                                                         %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+CA = Multiple_Check_Conditions(cnf, dnf);
+
+if (~isempty(CA))
+    depth = depth - 1;
+    return
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                                                         %
+%                 Trivial Check                           %
+%                                                         %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+if min(nD, nC) <= 2
+    val = MEasy_case(cnf, dnf);
+    if(~isempty(val))
+        CA = val;
+        depth = depth - 1;
+        return
+    end
+else %line 5
+    split_var = Choose_SplitVar(cnf, dnf, split_method);
+    ind = find(splitting==0, 1);
+    splitting(ind) = split_var;
+    depth = depth + 1;
+    
+%     if (numel(var_depth)>0)
+%         ind = find(var_depth(:,1) == 0, 1);
+        var_depth = [var_depth;split_var, depth];
+%     else
+%         var_depth = [split_var, depth];
+%     end
+    
+    D_x_1 = phi_x_1(dnf, split_var);
+    D_x_0 = phi_x_0(dnf, split_var);
+    C_x_1 = phi_x_1(cnf, split_var);
+    C_x_0 = phi_x_0(cnf, split_var);
+    
+    if mu_frequent_in_A(split_var, dnf, cnf)% if split variable is at most mu-frequent in DNF (line 7)
+        
+        tempCNF = [C_x_0; C_x_1];
+        
+        if(size(tempCNF,1) > 1)
+            tempCNF = Irredundant(tempCNF);
+        end
+        
+        if (~Hashing)
+            CA = FK_All(tempCNF, D_x_1, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist ); % line 8
+        else
+            cond = (size(tempCNF,1) > thresh && size(D_x_1,1) > thresh);
+            
+            if(cond)
+                if(canonical ==  1)
+                    [CA, key1, perm1] = Hashing_CanonicalForm(tempCNF, D_x_1);
+                else
+                    [CA, key1] = Hashing_wo_perm(tempCNF, D_x_1);
+                end
+            end
+            if (~cond || strcmp(CA, 'None'))
+                CA = FK_All(tempCNF, D_x_1, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist ); % line 8
+                if(~isempty(key1))
+                    if(canonical == 1)
+                        if (~isempty(CA))
+                            CA_mapped = CA(:,perm1);
+                        else
+                            CA_mapped = CA;
+                        end
+                        cellHash(cellSize,:) = {key1, CA_mapped, size(tempCNF,1), size(D_x_1,1)};
+                    else
+                        cellHash(cellSize,:) = {key1, CA, size(tempCNF,1), size(D_x_1,1)};
+                    end
+                    cellSize = cellSize + 1;
+                    key1 = [];
+                end
+            end
+        end % if hashing
+        
+        if (~isempty(CA))
+            
+            if (Shrinkage)
+                var = singleton_allonecolumn(tempCNF, D_x_1);
+                if ~isempty(var)
+                    CA(:,var) = 1;
+                end
+            end % if (Shrinkage)
+            ind = find(splitting==0, 1);
+            splitting(ind) = -split_var;
+            depth = depth - 1;
+            return %line 9
+        end
+        
+        for i=1: size(C_x_0,1) %line 10
+            vars = C_x_0(i,:);
+            
+            if(size(D_x_0,1)>0)
+                D_cx_0 = A_c_x(D_x_0, vars, 'DNF');
+            else
+                D_cx_0 = [];
+            end
+            
+            if(size(C_x_1,1)>0)
+                C_cx_1 = A_c_x(C_x_1, vars, 'CNF');
+            else
+                C_cx_1 = [];
+            end
+            
+            if(isempty(D_cx_0) && isempty(C_cx_1))
+                CA = [];
+            else
+                
+                if(size(D_cx_0,1) > 1)
+                    D_cx_0 = Irredundant(D_cx_0);
+                end
+                if(size(C_cx_1,1) > 1)
+                    C_cx_1 = Irredundant(C_cx_1);
+                end
+                if (~Hashing)
+                    CA = FK_All(C_cx_1, D_cx_0, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist); %line 11
+                else
+                    cond = (size(C_cx_1,1) > thresh && size(D_cx_0,1) > thresh);
+                    if(cond)
+                        if(canonical == 1)
+                            [CA, key2, perm2] = Hashing_CanonicalForm(C_cx_1, D_cx_0);
+                        else
+                            [CA, key2] = Hashing_wo_perm(C_cx_1, D_cx_0);
+                        end
+                    end
+                    if (~cond || strcmp(CA, 'None'))
+                        CA = FK_All(C_cx_1, D_cx_0, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist); %line 11
+                        
+                        if( ~isempty(key2))
+                            if(canonical == 1)
+                                if (~isempty(CA))
+                                    CA_mapped = CA(:,perm2);
+                                else
+                                    CA_mapped = CA;
+                                end
+                                cellHash(cellSize,:) = {key2, CA_mapped, size(C_cx_1,1), size(D_cx_0,1)};
+                            else
+                                cellHash(cellSize,:) = {key2, CA, size(C_cx_1,1), size(D_cx_0,1)};
+                            end
+                            cellSize = cellSize + 1;
+                        end
+                    end
+                    
+                end % if Hashing
+            end
+            if (~isempty(CA))
+                if (Shrinkage)
+                    var = singleton_allonecolumn(C_cx_1, D_cx_0);
+                    if ~isempty(var)
+                        CA(:,var) = 1;
+                    end
+                end % if Shrinkage
+                CA(:, split_var) = 1; % adding split_var
+                ind = find(splitting==0, 1);
+                splitting(ind) = -split_var;
+                depth = depth - 1;
+                
+                return %line 12
+            end
+        end %end of for (i in 1: length(C_x_0))
+    else if mu_frequent_in_A(split_var, cnf, dnf) % if split variable is at most mu-frequent in CNF(line 13)
+            
+            tempDNF = [D_x_0; D_x_1];
+            
+            if(size(tempDNF,1) > 1)
+                tempDNF = Irredundant(tempDNF);
+            end
+            
+            if (~Hashing)
+                CA = FK_All(C_x_1, tempDNF, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist); %line 14
+            else
+                cond = (size(C_x_1,1) > thresh && size(tempDNF,1) > thresh);
+                if(cond)
+                    if(canonical == 1)
+                        [CA, key3, perm3] = Hashing_CanonicalForm(C_x_1, tempDNF);
+                    else
+                        [CA, key3] = Hashing_wo_perm(C_x_1, tempDNF);
+                    end
+                end
+                if (~cond || strcmp(CA, 'None'))
+                    CA = FK_All(C_x_1, tempDNF, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist); %line 14
+                    
+                    if(~isempty(key3))
+                        if(canonical == 1)
+                            if (~isempty(CA))
+                                CA_mapped = CA(:,perm3);
+                            else
+                                CA_mapped = CA;
+                            end
+                            cellHash(cellSize,:) = {key3, CA_mapped, size(C_x_1,1), size(tempDNF,1)};
+                        else
+                            cellHash(cellSize,:) = {key3, CA, size(C_x_1,1), size(tempDNF,1)};
+                        end
+                        cellSize = cellSize + 1;
+                        key3 = [];
+                    end
+                end
+            end
+            if (~isempty(CA))
+                if (Shrinkage)
+                    var = singleton_allonecolumn(C_x_1, tempDNF);
+                    if ~isempty(var)
+                        CA(:,var) = 1;
+                    end
+                end
+                CA(:, split_var) = 1;
+                ind = find(splitting==0, 1);
+                splitting(ind) = -split_var;
+                depth = depth - 1;
+                
+                return %line 15
+            end
+            
+            for i=1: size(D_x_0,1) %line 16
+                vars = D_x_0(i,:);
+                
+                if(size(D_x_1,1)>0)
+                    D_mx_1 = A_m_x(D_x_1, vars, 'DNF');
+                else
+                    D_mx_1 = [];
+                end
+                if(size(C_x_0,1)>0)
+                    C_mx_0 = A_m_x(C_x_0, vars, 'CNF');
+                else
+                    C_mx_0 = [];
+                end
+                
+                if(isempty(D_mx_1) && isempty(C_mx_0))
+                    CA = [];
+                else
+                    
+                    if(size(D_mx_1,1) > 1)
+                        D_mx_1 = Irredundant(D_mx_1);
+                    end
+                    if(size(C_mx_0,1) > 1)
+                        C_mx_0 = Irredundant(C_mx_0);
+                    end
+                    if (~Hashing)
+                        CA = FK_All(C_mx_0, D_mx_1, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist); %line 17
+                    else
+                        cond = (size(C_mx_0, 1) > thresh && size(D_mx_1, 1) > thresh);
+                        if(cond)
+                            if(canonical==1)
+                                [CA, key4, perm4] = Hashing_CanonicalForm(C_mx_0, D_mx_1);
+                            else
+                                [CA, key4] = Hashing_wo_perm(C_mx_0, D_mx_1);
+                            end
+                        end
+                        if (~cond || strcmp(CA, 'None'))
+                            CA = FK_All(C_mx_0, D_mx_1, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist); %line 17
+                            
+                            if(~isempty(key4))
+                                if(canonical == 1)
+                                    if (~isempty(CA))
+                                        CA_mapped = CA(:,perm4);
+                                    else
+                                        CA_mapped = CA;
+                                    end
+                                    cellHash(cellSize,:) = {key4, CA_mapped, size(C_mx_0,1), size(D_mx_1,1)};
+                                else
+                                    cellHash(cellSize,:) = {key4, CA, size(C_mx_0,1), size(D_mx_1,1)};
+                                end
+                                cellSize = cellSize + 1;
+                                %                         key4 = [];
+                            end
+                        end
+                        
+                    end % if hashing
+                end
+                if (~isempty(CA))
+                    if (Shrinkage)
+                        var = singleton_allonecolumn(C_mx_0, D_mx_1);
+                        if ~isempty(var)
+                            CA(:,var) = 1;
+                        end
+                    end
+                    CA(:, logical(vars))= 1;
+                    ind = find(splitting==0, 1);
+                    splitting(ind) = -split_var;
+                    depth = depth - 1;
+                    
+                    return
+                end
+            end %end of for (i in 1: length(C_x_0))
+        else % line 19
+            
+            if(Ordering)
+                if(~isempty(CA_tab))
+                    case_prob = Finding_OrderCase(CA_tab, recentHist, split_var);
+                else
+                    case_prob = 0;
+                end
+                if (case_prob ==0) % first false then true
+                    Ordering = false;
+                else % case_prob == 1 % first true then false
+                    
+                    %################Fisrt True#################
+                    tempDNF = [D_x_0; D_x_1];
+                    
+                    if(size(tempDNF,1) > 1)
+                        tempDNF = Irredundant(tempDNF);
+                    end
+                    if (~Hashing)
+                        CA = FK_All(C_x_1, tempDNF, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist); % line 22
+                    else
+                        cond = (size(C_x_1,1) > thresh && size(tempDNF,1) > thresh);
+                        if(cond)
+                            if(canonical == 1)
+                                [CA, key6, perm6] = Hashing_CanonicalForm(C_x_1, tempDNF);
+                            else
+                                [CA, key6] = Hashing_wo_perm(C_x_1, tempDNF);
+                            end
+                        end
+                        if (~cond || strcmp(CA, 'None'))
+                            CA = FK_All(C_x_1, tempDNF, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist); % line 22
+                            
+                            if(~isempty(key6))
+                                if(canonical == 1)
+                                    if (~isempty(CA))
+                                        CA_mapped = CA(:,perm6);
+                                    else
+                                        CA_mapped = CA;
+                                    end
+                                    cellHash(cellSize,:) = {key6, CA_mapped, size(C_x_1,1), size(tempDNF,1)};
+                                else
+                                    cellHash(cellSize,:) = {key6, CA, size(C_x_1,1), size(tempDNF,1)};
+                                end
+                                cellSize = cellSize + 1;
+                                key6 = [];
+                            end
+                        end
+                    end
+                    
+                    if (~isempty(CA))
+                        if (Shrinkage)
+                            var = singleton_allonecolumn(C_x_1, tempDNF);
+                            if ~isempty(var)
+                                CA(:,var) = 1;
+                            end
+                        end
+                        CA(:, split_var) =1; % adding split.var
+                        ind = find(splitting==0, 1);
+                        splitting(ind) = -split_var;
+                        depth = depth - 1;
+                        
+                        return %line 23
+                    end
+                    %################Second False#################
+                    tempCNF = [C_x_0; C_x_1];
+                    
+                    if(size(tempCNF,1) > 1)
+                        tempCNF = Irredundant(tempCNF);
+                    end
+                    
+                    if (~Hashing)
+                        CA = FK_All(tempCNF, D_x_1, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist);  %line 20
+                    else
+                        cond = (size(tempCNF,1) > thresh && size(D_x_1,1) > thresh);
+                        if(cond)
+                            if(canonical == 1)
+                                [CA, key5, perm5] = Hashing_CanonicalForm(tempCNF, D_x_1);
+                            else
+                                [CA, key5] = Hashing_wo_perm(tempCNF, D_x_1);
+                            end
+                        end
+                        if (~cond || strcmp(CA, 'None'))
+                            CA = FK_All(tempCNF, D_x_1, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist);  %line 20
+                            
+                            if(~isempty(key5))
+                                if(canonical == 1)
+                                    if (~isempty(CA))
+                                        CA_mapped = CA(:,perm5);
+                                    else
+                                        CA_mapped = CA;
+                                    end
+                                    cellHash(cellSize,:) = {key5, CA_mapped, size(tempCNF,1), size(D_x_1,1)};
+                                else
+                                    cellHash(cellSize,:) = {key5, CA, size(tempCNF,1), size(D_x_1,1)};
+                                end
+                                cellSize = cellSize + 1;
+                                key5 = [];
+                            end
+                        end
+                    end % if  Hashing
+                    
+                    if (~isempty(CA))
+                        if (Shrinkage)
+                            var = singleton_allonecolumn(tempCNF, D_x_1);
+                            if ~isempty(var)
+                                CA(:,var) = 1;
+                            end
+                        end
+                    end
+                end % if case_prob = 0
+            end
+            
+            
+            if(~Ordering)
+                % Default case: test splitvar=F then splitvar=True
+                tempCNF = [C_x_0; C_x_1];
+                
+                if(size(tempCNF,1) > 1)
+                    tempCNF = Irredundant(tempCNF);
+                end
+                
+                if (~Hashing)
+                    CA = FK_All(tempCNF, D_x_1, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist);  %line 20
+                else
+                    cond = (size(tempCNF,1) > thresh && size(D_x_1,1) > thresh);
+                    if(cond)
+                        if(canonical == 1)
+                            [CA, key5, perm5] = Hashing_CanonicalForm(tempCNF, D_x_1);
+                        else
+                            [CA, key5] = Hashing_wo_perm(tempCNF, D_x_1);
+                        end
+                    end
+                    if (~cond || strcmp(CA, 'None'))
+                        CA = FK_All(tempCNF, D_x_1, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist);  %line 20
+                        
+                        if(~isempty(key5))
+                            if(canonical == 1)
+                                if (~isempty(CA))
+                                    CA_mapped = CA(:,perm5);
+                                else
+                                    CA_mapped = CA;
+                                end
+                                cellHash(cellSize,:) = {key5, CA_mapped, size(tempCNF,1), size(D_x_1,1)};
+                            else
+                                cellHash(cellSize,:) = {key5, CA, size(tempCNF,1), size(D_x_1,1)};
+                            end
+                            cellSize = cellSize + 1;
+                            key5 = [];
+                        end
+                    end
+                end % if  Hashing
+                
+                if (~isempty(CA))
+                    if (Shrinkage)
+                        var = singleton_allonecolumn(tempCNF, D_x_1);
+                        if ~isempty(var)
+                            CA(:,var) = 1;
+                        end
+                    end
+                end
+                if(isempty(CA)) % line 21
+                    tempDNF = [D_x_0; D_x_1];
+                    
+                    if(size(tempDNF,1) > 1)
+                        tempDNF = Irredundant(tempDNF);
+                    end
+                    if (~Hashing)
+                        CA = FK_All(C_x_1, tempDNF, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist); % line 22
+                    else
+                        cond = (size(C_x_1,1) > thresh && size(tempDNF,1) > thresh);
+                        if(cond)
+                            if(canonical == 1)
+                                [CA, key6, perm6] = Hashing_CanonicalForm(C_x_1, tempDNF);
+                            else
+                                [CA, key6] = Hashing_wo_perm(C_x_1, tempDNF);
+                            end
+                        end
+                        if (~cond || strcmp(CA, 'None'))
+                            CA = FK_All(C_x_1, tempDNF, split_method, Hashing, Canonical, Shrinkage, Ordering, recentHist); % line 22
+                            
+                            if(~isempty(key6))
+                                if(canonical == 1)
+                                    if (~isempty(CA))
+                                        CA_mapped = CA(:,perm6);
+                                    else
+                                        CA_mapped = CA;
+                                    end
+                                    cellHash(cellSize,:) = {key6, CA_mapped, size(C_x_1,1), size(tempDNF,1)};
+                                else
+                                    cellHash(cellSize,:) = {key6, CA, size(C_x_1,1), size(tempDNF,1)};
+                                end
+                                cellSize = cellSize + 1;
+                                key6 = [];
+                            end
+                        end
+                    end
+                    
+                    if (~isempty(CA))
+                        if (Shrinkage)
+                            var = singleton_allonecolumn(C_x_1, tempDNF);
+                            if ~isempty(var)
+                                CA(:,var) = 1;
+                            end
+                        end
+                        CA(:, split_var) =1; % adding split.var
+                        ind = find(splitting==0, 1);
+                        splitting(ind) = -split_var;
+                        depth = depth - 1;
+                        
+                        return %line 23
+                    end
+                end% end if if(length(CA)==0)
+            end  % if ordering==0
+        end% end else if(mu_frequent_in_A(split.var, A=cnf, B=dnf))
+    end% end else %line 5
+    ind = find(splitting==0, 1);
+    splitting(ind) = -split_var;
+    depth = depth - 1;
+    return
+end
+end
